@@ -4,3 +4,9 @@ dataset_kalantari
 trained-model*
 result*
 wandb
+*.jpg
+run_test*.sh
+!run_test.sh
+run_train*.sh
+!run_test.sh
+*.ini
