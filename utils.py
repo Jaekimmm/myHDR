@@ -139,7 +139,7 @@ def mu_tonemap(hdr_image, mu=5000):
         np.ndarray (): Returns the mu-law tonemapped image.
 
     """
-    return np.log(1 + mu * hdr_image) / np.log(1 + mu)
+    return torch.log(1 + mu * hdr_image) / torch.log(torch.tensor(1 + mu, dtype=torch.float32, device='cuda'))
 
 def norm_mu_tonemap(hdr_image, norm_value, mu=5000):
     """ This function normalizes the input HDR linear image by the specified norm_value and then computes

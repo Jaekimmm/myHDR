@@ -66,10 +66,10 @@ class data_loader(data.Dataset):
                     label = f['GT'][:]
             elif self.data_name == 'kalan':
                 with h5py.File(sample_path, 'r') as f:
-                    data1 = f['IN'][3:6, :, :]   # short after gain adjustment
-                    data2 = f['IN'][9:12, :, :]  # mid after gain adjustment
-                    data3 = f['IN'][15:18, :, :] # long after gain adjustment
-                    label = f['GT'][:]
+                    data1 = f['IN'][ 3: 6, 0:1496, :]   # short after gain adjustment
+                    data2 = f['IN'][ 9:12, 0:1496, :]  # mid after gain adjustment
+                    data3 = f['IN'][15:18, 0:1496, :] # long after gain adjustment
+                    label = f['GT'][  :  , 0:1496, :]
             
             if self.crop_size > 0 : 
                 data1, data2, data3, label = self.imageCrop(data1, data2, data3, label, self.crop_size)
@@ -186,31 +186,31 @@ def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir,
         data3 = tonemap(data3, args.input_tonemap)
         target = tonemap(target, args.label_tonemap)
         
-        if (epoch == 1) and (batch_idx == 0):
-            # print one sample data to check the image
-            img = torch.squeeze(data1[0:1, :, :, :]*255.)
-            img = img.data.cpu().numpy().astype(np.uint8)
-            img = np.transpose(img, (2, 1, 0))
-            img = img[:, :, [0, 1, 2]]
-            imageio.imwrite(trained_model_dir + '/sample_in1.jpg', img)
-            
-            img = torch.squeeze(data2[0:1, :, :, :]*255.)
-            img = img.data.cpu().numpy().astype(np.uint8)
-            img = np.transpose(img, (2, 1, 0))
-            img = img[:, :, [0, 1, 2]]
-            imageio.imwrite(trained_model_dir + '/sample_in2.jpg', img)
+        #if (epoch == 1) and (batch_idx == 0):
+        #    # print one sample data to check the image
+        #    img = torch.squeeze(data1[0:1, :, :, :]*255.)
+        #    img = img.data.cpu().numpy().astype(np.uint8)
+        #    img = np.transpose(img, (2, 1, 0))
+        #    img = img[:, :, [0, 1, 2]]
+        #    imageio.imwrite(trained_model_dir + f'/sample_in1_b{batch_idx}.jpg', img)
+        #    
+        #    img = torch.squeeze(data2[0:1, :, :, :]*255.)
+        #    img = img.data.cpu().numpy().astype(np.uint8)
+        #    img = np.transpose(img, (2, 1, 0))
+        #    img = img[:, :, [0, 1, 2]]
+        #    imageio.imwrite(trained_model_dir + f'/sample_in2_b{batch_idx}.jpg', img)
         
-            img = torch.squeeze(data3[0:1, :, :, :]*255.)
-            img = img.data.cpu().numpy().astype(np.uint8)
-            img = np.transpose(img, (2, 1, 0))
-            img = img[:, :, [0, 1, 2]]
-            imageio.imwrite(trained_model_dir + '/sample_in3.jpg', img)
+        #    img = torch.squeeze(data3[0:1, :, :, :]*255.)
+        #    img = img.data.cpu().numpy().astype(np.uint8)
+        #    img = np.transpose(img, (2, 1, 0))
+        #    img = img[:, :, [0, 1, 2]]
+        #    imageio.imwrite(trained_model_dir + f'/sample_in3_b{batch_idx}.jpg', img)
         
-            img = torch.squeeze(target[0:1, :, :, :]*255.)
-            img = img.data.cpu().numpy().astype(np.uint8)
-            img = np.transpose(img, (2, 1, 0))
-            img = img[:, :, [0, 1, 2]]
-            imageio.imwrite(trained_model_dir + '/sample_target.jpg', img)
+        #    img = torch.squeeze(target[0:1, :, :, :]*255.)
+        #    img = img.data.cpu().numpy().astype(np.uint8)
+        #    img = np.transpose(img, (2, 1, 0))
+        #    img = img[:, :, [0, 1, 2]]
+        #    imageio.imwrite(trained_model_dir + f'/sample_targeti_b{batch_idx}.jpg', img)
         
         if args.offset: 
             # if output activation is tanh, then input should be normalized to [-1, 1]
@@ -262,51 +262,41 @@ def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir,
 
 def testing_fun(model, test_loaders, outdir, args):
     model.eval()
+    
     test_loss = 0
     val_psnr = 0
+    val_psnr_norm = 0
     val_psnr_mu = 0
     num = 0
-    
-    for data, target in test_loaders:
-        Test_Data_name = test_loaders.dataset.list_txt[num].split('.h5')[0].split('/')[-1]
+   
+    test_loader_iter = tqdm(test_loaders, total=len(test_loaders), desc="Test")
+    for data1, data2, data3, target in test_loader_iter:
+        Test_Data_name = test_loaders.dataset.sample_list[num].split('.h5')[0].split('/')[-1]
         if args.use_cuda:
-            data, target = data.cuda(), target.cuda()
+            data1, data2, data3 = data1.cuda(), data2.cuda(), data3.cuda()
+            target = target.cuda()
 
         with torch.no_grad():
-            if args.format == 'mono':
-                data_mono = torch.cat([rgb_to_mono_gt(data[:, 3*i:3*(i+1), :]) for i in range(6)], dim=1)  # (batch, 6, 1, H, W)
-                target = rgb_to_mono_gt(target)
-                data1 = torch.cat((data_mono[:, 0:1, :], data_mono[:, 3:4, :]), dim=1)
-                data2 = torch.cat((data_mono[:, 1:2, :], data_mono[:, 4:5, :]), dim=1)
-                data3 = torch.cat((data_mono[:, 2:3, :], data_mono[:, 5:6, :]), dim=1)
-            elif args.format == 'rgb':
-                data1 = torch.cat((data[:, 0:3, :], data[:,  9:12, :]), dim=1)
-                data2 = torch.cat((data[:, 3:6, :], data[:, 12:15, :]), dim=1)
-                data3 = torch.cat((data[:, 6:9, :], data[:, 15:18, :]), dim=1)
-            elif args.format == 'rgb_org':
-                data1 = data[:, 0:3, :, :]
-                data2 = data[:, 3:6, :, :]
-                data3 = data[:, 6:9, :, :]
-            elif args.format == 'rgb_tm':
-                data1 = data[:, 9:12, :, :]
-                data2 = data[:, 3:6, :, :]
-                data3 = data[:, 6:9, :, :]
-            elif args.format == 'rgb_dual_sice':
-                data1 = data[:, 0:3, :, :]      # short (under-exposed)
-                data2 = data[:, 0:3, :, :]      # no mid-exposure
-                data3 = data[:, 3:6, :, :]      # long (over-exposed)
-            else:
-                data_yuv = torch.cat([rgb_to_yuv_gt(data[:, 3*i:3*(i+1), :], args.format) for i in range(6)], dim=1)  # (batch, 6, 1, H, W)
-                target = rgb_to_yuv(target)
-                print(f"[INFO] Color conversion : RGB({data.shape}) --> mono({data_yuv.shape})")
-                data1 = torch.cat((data_yuv[:, 0:3, :], data_yuv[:,  9:12, :]), dim=1)
-                data2 = torch.cat((data_yuv[:, 3:6, :], data_yuv[:, 12:15, :]), dim=1)
-                data3 = torch.cat((data_yuv[:, 6:9, :], data_yuv[:, 15:18, :]), dim=1)
+            data1 = tonemap(data1, args.input_tonemap)
+            data2 = tonemap(data2, args.input_tonemap)
+            data3 = tonemap(data3, args.input_tonemap)
+            target = tonemap(target, args.label_tonemap)
+            
+            if args.offset: 
+                # if output activation is tanh, then input should be normalized to [-1, 1]
+                data1 = (data1 * 2.0) - 1.0
+                data2 = (data2 * 2.0) - 1.0
+                data3 = (data3 * 2.0) - 1.0
+                target = (target * 2.0) - 1.0
+            
             output = model(data1, data2, data3)
+            
             if args.offset:
                 output = (output + 1.0) / 2.0
                 target = (target + 1.0) / 2.0
                 
+            output = tonemap(output, args.output_tonemap)
+            
         # save the result to .H5 files
         hdrfile = h5py.File(outdir + "/" + Test_Data_name + '_hdr.h5', 'w')
         img = output[0, :, :, :]
@@ -352,30 +342,39 @@ def testing_fun(model, test_loaders, outdir, args):
         psnr_target = psnr_target.data.cpu().numpy().astype(np.float32)
         
         #########  Calculate metrics
-        psnr = normalized_psnr(psnr_output, psnr_target, psnr_target.max())
-        psnr_mu = psnr_tanh_norm_mu_tonemap(psnr_target, psnr_output)
+        #psnr = psnr(psnr_output, psnr_target)
+        psnr_norm = normalized_psnr(psnr_output, psnr_target, psnr_target.max())
+        #psnr_mu = psnr_tanh_norm_mu_tonemap(psnr_target, psnr_output)
 
-        val_psnr += psnr
-        val_psnr_mu += psnr_mu
+        val_psnr += psnr(psnr_output, psnr_target)
+        val_psnr_norm += psnr_norm
+        #val_psnr_mu += psnr_mu
         
-        hdr = torch.log(1 + 5000 * output.cpu()) / torch.log(
-            Variable(torch.from_numpy(np.array([1 + 5000])).float()))
-        target = torch.log(1 + 5000 * target).cpu() / torch.log(
-            Variable(torch.from_numpy(np.array([1 + 5000])).float()))
+        #hdr = torch.log(1 + 5000 * output.cpu()) / torch.log(
+        #    Variable(torch.from_numpy(np.array([1 + 5000])).float()))
+        #target = torch.log(1 + 5000 * target).cpu() / torch.log(
+        #    Variable(torch.from_numpy(np.array([1 + 5000])).float()))
 
-        test_loss += F.mse_loss(hdr, target)
+        #test_loss += F.mse_loss(hdr, target)
+        test_loss += F.mse_loss(output, target)
             
         num = num + 1
 
     test_loss = test_loss / len(test_loaders.dataset)
     val_psnr = val_psnr / len(test_loaders.dataset)
-    val_psnr_mu = val_psnr_mu / len(test_loaders.dataset)
-    print('\n Test set: Average Loss: {:.4f}'.format(test_loss.item()))
+    val_psnr = val_psnr_norm / len(test_loaders.dataset)
+    #val_psnr_mu = val_psnr_mu / len(test_loaders.dataset)
+    print('\n Test result - Average Loss: {:.4f}, Average PSNR: {:.4f}, Average PSNR_norm: {:.4f}'.format(test_loss.item(), val_psnr, val_psnr_norm))
 
     run_time = datetime.now().strftime('%m/%d %H:%M:%S')
-    flog = open('./test_result.log', 'a')
-    flog.write(f'{args.model}, {args.run_name}, {args.epoch}, {run_time}, {test_loss:.6f}, {val_psnr:.6f}, {val_psnr_mu:.06f}\n')
-    flog.close()
+    if not os.path.exists('./test_result.log'):
+        with open('./test_result.log', 'w') as flog:
+            flog.write('Model, Run_name, Epoch, Run_time, Test_loss, PSNR, PSNR_norm\n')
+            flog.write(f'{args.model}, {args.run_name}, {args.epoch}, {run_time}, {test_loss:.6f}, {val_psnr:.6f}, {val_psnr_norm:.06f}\n')
+    else:
+        with open('./test_result.log', 'a') as flog:
+            flog.write(f'{args.model}, {args.run_name}, {args.epoch}, {run_time}, {test_loss:.6f}, {val_psnr:.6f}, {val_psnr_norm:.06f}\n')
+    
     return test_loss
 
 
@@ -431,93 +430,6 @@ def validation(epoch, model, valid_loaders, trained_model_dir, args):
     valid_loss = valid_loss / valid_num
     val_psnr = val_psnr / valid_num
     #val_psnr_mu = val_psnr_mu / valid_num
-    print('Validation Epoch {}: avg_loss: {:.4f}, Average PSNR: {:.4f}'.format(epoch, valid_loss, val_psnr))
+    print('Validation - Epoch {}: avg_loss: {:.4f}, Average PSNR: {:.4f}'.format(epoch, valid_loss, val_psnr))
     
     return valid_loss, val_psnr
-
-class testimage_dataloader(data.Dataset):
-    def __init__(self, data_dir, patch_div=1, color='rgb', offset=False, label_tonemap=False):
-        #f = open(data_dir)
-        #self.list_txt = f.readlines()
-        self.list_txt = [os.path.join(data_dir, f) for f in os.listdir(list_dir) if f.endswith('.h5')]
-        self.length = len(self.list_txt)
-        print(f"[INFO] {self.length} data loaded from {data_dir}")
-        print(self.list_txt)
-        
-        self.format = color
-        self.patch_div = patch_div
-        self.offset = offset
-        self.label_tonemap = label_tonemap
-
-    def __getitem__(self, index):
-        sample_path = self.list_txt[index]
-        sample_path = sample_path.strip()
-        
-        if os.path.exists(sample_path):
-            
-            f = h5py.File(sample_path, 'r')
-            data = self.crop_for_patch(f['IN'][:], self.patch_div) 
-            label = self.crop_for_patch(f['GT'][:], self.patch_div)
-            #data = f['IN'][:]
-            #label = f['GT'][:]
-            f.close()
-        # print(sample_path)
-            
-            if self.label_tonemap :
-                gamma = 2.24 #degamma
-                label = label ** gamma
-                norm_perc = np.percentile(label, 99)
-                label = tanh_norm_mu_tonemap(label, norm_perc)
-            
-            if self.offset :
-                data = data * 2.0 - 1.0
-                label = label * 2.0 - 1.0
-            
-            if self.format == '444':
-                print(f"data.shape: {data.shape}, label.shape: {label.shape}")
-                data = torch.cat([rgb_to_mono(data[:, 3*i:3*(i+1), :, :]) for i in range(6)], dim=1)
-        return torch.from_numpy(data).float(), torch.from_numpy(label).float()
-
-    def __len__(self):
-        return self.length
-
-    def random_number(self, num):
-        return random.randint(1, num)
-    
-    def imageCrop(self, data, label, crop_size):
-        c, w, h = data.shape
-        w_boder = w - crop_size  # sample point y
-        h_boder = h - crop_size  # sample point x ...
-
-        if crop_size == 1496:
-            start_w = 0
-            start_h = 0
-        else:
-            start_w = self.random_number(w_boder - 1)
-            start_h = self.random_number(h_boder - 1)
-
-        crop_data = data[:, start_w:start_w + crop_size, start_h:start_h + crop_size]
-        crop_label = label[:, start_w:start_w + crop_size, start_h:start_h + crop_size]
-        return crop_data, crop_label
-    
-    def crop_for_patch(self, image, patch_div=1):
-        # crop the image to be divisible by patch_div
-        if image.ndim == 2:  # 2D image (height x width)
-            height, width = image.shape
-            new_height = (height // patch_div) * patch_div
-            new_width = (width // patch_div) * patch_div
-            cropped_image = image[:new_height, :new_width]
-        elif image.ndim == 3:  # 3D image (channels x height x width)
-            channels, height, width = image.shape
-            new_height = (height // patch_div) * patch_div
-            new_width = (width // patch_div) * patch_div
-            cropped_image = image[:, :new_height, :new_width]
-        elif image.ndim == 4:  # 4D image (num x channels x height x width)
-            num, channels, height, width = image.shape
-            new_height = (height // patch_div) * patch_div
-            new_width = (width // patch_div) * patch_div
-            cropped_image = image[:, :, :new_height, :new_width]
-        else:
-            raise ValueError("Unsupported image shape")
-    
-        return cropped_image

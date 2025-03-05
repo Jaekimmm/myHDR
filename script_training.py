@@ -122,15 +122,13 @@ for epoch in range(start_epoch + 1, args.epochs + 1):
     if epoch % save_model_interval == 0:
         model_name = trained_model_dir + 'trained_model{}.pkl'.format(epoch)
         torch.save(model.state_dict(), model_name)
-        valid_loss, psnr, psnr_mu = validation(epoch, model, valid_loaders, trained_model_dir, args)
+        valid_loss, psnr = validation(epoch, model, valid_loaders, trained_model_dir, args)
        
-        print(f"Validaton at Epoch {epoch}: valid_loss = {valid_loss:.4f}, psnr = {psnr:.4f}, psnr_mu = {psnr_mu:.4f}")
         wandb.log({
             "epoch": epoch,
             "train_loss": train_loss,
             "valid_loss": valid_loss,
             "psnr": psnr,
-            "psnr_mu": psnr_mu
         })
         
 end_train = time.time()
