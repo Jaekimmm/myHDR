@@ -17,7 +17,7 @@ import wandb
 
 parser = argparse.ArgumentParser(description='Attention-guided HDR')
 
-parser.add_argument('--model', type=str, default='AHDR')
+parser.add_argument('--model', type=str, default='LIGHTFUSE')
 parser.add_argument('--run_name', type=str, default='')
 parser.add_argument('--train_data', default='./dataset_train')
 parser.add_argument('--valid_data', default='./dataset_test')
@@ -99,7 +99,7 @@ if args.use_cuda:
 
 print(f"[INFO] Start training with model {model}")
 print(f"[INFO] Loss function : {args.loss}")
-print(f"[INFO] Input preprocessing : Offset {args.offset}, Label tonemap {args.label_tonemap}\n")
+print(f"[INFO] Input preprocessing : Offset {args.offset}, Input tonemap {args.input_tonemap}, Label tonemap {args.label_tonemap}\n")
 
 
 # Training loop

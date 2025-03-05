@@ -36,9 +36,10 @@ def model_restore(model, trained_model_dir):
 
 
 class data_loader(data.Dataset):
-    def __init__(self, data_dir, crop_size=0, geometry_aug=False):
+    def __init__(self, data_dir, crop_size=0, crop_div=8, geometry_aug=False):
         super().__init__()
         self.crop_size = crop_size
+        self.crop_div = crop_div
         self.geometry_aug = geometry_aug
         
         self.data_name = data_dir.split("_")
@@ -66,11 +67,13 @@ class data_loader(data.Dataset):
                     label = f['GT'][:]
             elif self.data_name == 'kalan':
                 with h5py.File(sample_path, 'r') as f:
-                    data1 = f['IN'][ 3: 6, 0:1496, :]   # short after gain adjustment
-                    data2 = f['IN'][ 9:12, 0:1496, :]  # mid after gain adjustment
-                    data3 = f['IN'][15:18, 0:1496, :] # long after gain adjustment
-                    label = f['GT'][  :  , 0:1496, :]
+                    data1 = f['IN'][3*3:4*3, 0:1496, :]  # short after gain adjustment
+                    data2 = f['IN'][4*3:5*3, 0:1496, :]  # mid after gain adjustment
+                    data3 = f['IN'][5*3:6*3, 0:1496, :]  # long after gain adjustment
+                    label = f['GT'][   :   , 0:1496, :]
             
+            if self.crop_div > 0 : 
+                data1, data2, data3, label = self.crop_for_div(data1, data2, data3, label, self.crop_div)
             if self.crop_size > 0 : 
                 data1, data2, data3, label = self.imageCrop(data1, data2, data3, label, self.crop_size)
             if self.geometry_aug : 
@@ -152,6 +155,37 @@ class data_loader(data.Dataset):
             in_label = in_label[:, :, index]
 
         return in_data1, in_data2, in_data3, in_label
+    
+    def crop_for_div(self, data1, data2, data3, label, crop_div=1):
+        # crop the image to be divisible by crop_div
+        if data1.ndim == 2:  # 2D image (height x width)
+            height, width = data1.shape
+            new_height = (height // crop_div) * crop_div
+            new_width = (width // crop_div) * crop_div
+            cropped_data1 = data1[:new_height, :new_width]
+            cropped_data2 = data2[:new_height, :new_width]
+            cropped_data3 = data3[:new_height, :new_width]
+            cropped_label = label[:new_height, :new_width]
+        elif data1.ndim == 3:  # 3D image (channels x height x width)
+            channels, height, width = data1.shape
+            new_height = (height // crop_div) * crop_div
+            new_width = (width // crop_div) * crop_div
+            cropped_data1 = data1[:, :new_height, :new_width]
+            cropped_data2 = data2[:, :new_height, :new_width]
+            cropped_data3 = data3[:, :new_height, :new_width]
+            cropped_label = label[:, :new_height, :new_width]
+        elif data1.ndim == 4:  # 4D image (num x channels x height x width)
+            num, channels, height, width = data1.shape
+            new_height = (height // crop_div) * crop_div
+            new_width = (width // crop_div) * crop_div
+            cropped_data1 = data1[:, :, :new_height, :new_width]
+            cropped_data2 = data2[:, :, :new_height, :new_width]
+            cropped_data3 = data3[:, :, :new_height, :new_width]
+            cropped_label = label[:, :, :new_height, :new_width]
+        else:
+            raise ValueError("Unsupported image shape")
+    
+        return cropped_data1, cropped_data2, cropped_data3, cropped_label
         
 
 def get_lr(epoch, lr, max_epochs):
@@ -186,31 +220,31 @@ def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir,
         data3 = tonemap(data3, args.input_tonemap)
         target = tonemap(target, args.label_tonemap)
         
-        #if (epoch == 1) and (batch_idx == 0):
-        #    # print one sample data to check the image
-        #    img = torch.squeeze(data1[0:1, :, :, :]*255.)
-        #    img = img.data.cpu().numpy().astype(np.uint8)
-        #    img = np.transpose(img, (2, 1, 0))
-        #    img = img[:, :, [0, 1, 2]]
-        #    imageio.imwrite(trained_model_dir + f'/sample_in1_b{batch_idx}.jpg', img)
-        #    
-        #    img = torch.squeeze(data2[0:1, :, :, :]*255.)
-        #    img = img.data.cpu().numpy().astype(np.uint8)
-        #    img = np.transpose(img, (2, 1, 0))
-        #    img = img[:, :, [0, 1, 2]]
-        #    imageio.imwrite(trained_model_dir + f'/sample_in2_b{batch_idx}.jpg', img)
+        if (epoch == 1) and (batch_idx == 0):
+            # print one sample data to check the image
+            img = torch.squeeze(data1[0:1, :, :, :]*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(trained_model_dir + f'/sample_in1_b{batch_idx}.jpg', img)
+            
+            img = torch.squeeze(data2[0:1, :, :, :]*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(trained_model_dir + f'/sample_in2_b{batch_idx}.jpg', img)
         
-        #    img = torch.squeeze(data3[0:1, :, :, :]*255.)
-        #    img = img.data.cpu().numpy().astype(np.uint8)
-        #    img = np.transpose(img, (2, 1, 0))
-        #    img = img[:, :, [0, 1, 2]]
-        #    imageio.imwrite(trained_model_dir + f'/sample_in3_b{batch_idx}.jpg', img)
+            img = torch.squeeze(data3[0:1, :, :, :]*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(trained_model_dir + f'/sample_in3_b{batch_idx}.jpg', img)
         
-        #    img = torch.squeeze(target[0:1, :, :, :]*255.)
-        #    img = img.data.cpu().numpy().astype(np.uint8)
-        #    img = np.transpose(img, (2, 1, 0))
-        #    img = img[:, :, [0, 1, 2]]
-        #    imageio.imwrite(trained_model_dir + f'/sample_targeti_b{batch_idx}.jpg', img)
+            img = torch.squeeze(target[0:1, :, :, :]*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(trained_model_dir + f'/sample_targeti_b{batch_idx}.jpg', img)
         
         if args.offset: 
             # if output activation is tanh, then input should be normalized to [-1, 1]
