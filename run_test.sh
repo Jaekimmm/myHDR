@@ -1,7 +1,9 @@
-CUDA_VISIBLE_DEVICES=0 python script_testing.py \
-    --model 'LIGHTFUSE_add_last_depthwise' \
-    --run_name 'sice' \
-    --epoch 10 \
-    --test_data './dataset_sice_valid' \
-    --nChannel 6 \
+CUDA_VISIBLE_DEVICES=0 python ./source/script_testing.py \
+    --model 'PLAIN_CONV_RES' \
+    --run_name 'loss_mse' \
+    --test_data './dataset_kalan_test' \
+    --input_tonemap 'mu' \
+    --label_tonemap 'mu' \
+    --epoch 40 \
+    --nChannel 3 \
     --nFeat 32

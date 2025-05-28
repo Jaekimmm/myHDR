@@ -8,10 +8,11 @@ import matplotlib.pyplot as plt
 import torch.distributed as dist
 import torchvision.models as models
 
-def mk_dir(dir_path):
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+import kornia
+import math
+import imageio
 
+#region : weight initialization
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
     #print(classname)
@@ -26,14 +27,25 @@ def weights_init_kaiming(m):
         init.normal(m.weight.data, 1.0, 0.02)
         init.constant(m.bias.data, 0.0)
 
-def model_load(model, trained_model_dir, model_file_name):
-    model_path = os.path.join(trained_model_dir, model_file_name)
-    # trained_model_dir + model_file_name    # '/modelParas.pkl'
-    print(f"[INFO] Load model from {model_path}")
-    model.load_state_dict(torch.load(model_path))
-    return model
+def weights_init_zero(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        if classname.find('Conv2d') != -1:
+            init.constant_(m.weight.data, 0.0 )
+            init.constant_(m.bias.data, 0.0)
+        else:
+            init.constant_(m.weight.data, 0.0)
+            init.constant_(m.bias.data, 0.0)
+    elif classname.find('Linear') != -1:
+        init.constant_(m.weight.data, 0.0)
+        init.constant_(m.bias.data, 0.0)
+    elif classname.find('BatchNorm') != -1:
+        init.constant_(m.weight.data, 0.0)
+        init.constant_(m.bias.data, 0.0)
+#endregion
 
 class EarlyStopping:    # copy from freeSoul
+#region : EarlyStopping
     def __init__(self, patience=3, delta=0.0, mode='min', verbose=True):
         """
         patience (int): loss or score가 개선된 후 기다리는 기간. default: 3
@@ -94,9 +106,10 @@ class EarlyStopping:    # copy from freeSoul
         else:
             # Continue
             self.early_stop = False
-  
+#endregion
+
             
-# Evaluation Metrics (copy from freeSoul)
+#region : Evaluation Metrics (copy from freeSoul)
 def psnr(im0, im1):
     """ This function computes the Peak Signal to Noise Ratio (PSNR) between two images whose ranges are [0-1].
         the mu-law tonemapped image.
@@ -126,8 +139,87 @@ def normalized_psnr(im0, im1, norm):
         """
     return psnr(im0/norm, im1/norm)
 
+def gaussian_2d(window_size=11, channel=1, sigma=1.5, device='cuda'):
+    gauss = torch.tensor([math.exp(-(x - window_size//2)**2 / float(2*sigma**2)) for x in range(window_size)], device=device)
+    gauss_2d = gauss.unsqueeze(1) @ gauss.unsqueeze(0)
+    gauss_2d = gauss_2d / gauss_2d.sum()
+    gauss_2d = gauss_2d.expand(channel, 1, window_size, window_size).contiguous()
+    return gauss_2d
 
-# Tone-mapping functions 
+def ssim(img1, img2, window_size=11, window=None, full=False):
+    # luminance(x,y) = (2 * mu(x) * mu(y) + C1) / (mu(x)^2 + mu(y)^2 + C1)
+    # contrast(x,y) = (2 * sigma(x) * sigma(y) + C2) / (sigma(x)^2 + sigma(y)^2 + C2)
+    # structure(x,y) = (sigma(x,y) + C3) / (sigma(x) * sigma(y) + C3)
+    # C1 = (0.01*L) ** 2
+    # C2 = (0.03*L) ** 2
+    # C3 = C2 / 2
+    # SSIM(x,y) = l(x,y)^a * c(x,y)^b * s(x,y)^c (a,b,c = blending ratio. default 1,1,1)
+    _, ch, _, _ = img1.size()
+    pad = window_size // 2
+
+    if window is None:
+        window = gaussian_2d(window_size, channel=ch, sigma=1.5, device=img1.device)
+
+    mu1 = F.conv2d(img1, window, padding=pad, groups=ch)
+    mu2 = F.conv2d(img2, window, padding=pad, groups=ch)
+    
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu12 = mu1 * mu2
+
+    sigma1_sq = F.conv2d(img1 * img1, window, padding=pad, groups=ch) - mu1_sq
+    sigma2_sq = F.conv2d(img2 * img2, window, padding=pad, groups=ch) - mu2_sq
+    sigma12 = F.conv2d(img1 * img2, window, padding=pad, groups=ch) - mu12
+
+    C1 = 0.01 ** 2
+    C2 = 0.03 ** 2
+    C3 = C2 / 2
+
+    numerator1 = 2 * mu12 + C1
+    numerator2 = 2 * sigma12 + C2
+    denominator1 = mu1_sq + mu2_sq + C1
+    denominator2 = sigma1_sq + sigma2_sq + C2
+
+    ssim_map = (numerator1 * numerator2) / (denominator1 * denominator2)
+    ssim_map = ssim_map.sum(dim=1, keepdim=True) / ch
+    ssim_score = ssim_map.mean()
+
+    if full:
+        luminance = (2.0 * mu12 + C1) / (mu1_sq + mu2_sq + C1)
+        contrast = (2.0 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
+        structure = (sigma12 + C3) / (torch.sqrt(sigma1_sq) * torch.sqrt(sigma2_sq) + C3)
+        
+        return ssim_map, ssim_score, luminance, contrast, structure
+    else:
+        return ssim_map, ssim_score
+#endregion
+
+def tonemap(img, option=None):
+    if option == 'mu':
+        return mu_tonemap(img)
+    elif option == 'norm_mu':
+        norm_perc = np.percentile(img, 99)
+        return norm_mu_tonemap(img, norm_perc)
+    elif option == 'tanh_norm_mu':
+        norm_perc = np.percentile(img, 99)
+        return tanh_norm_mu_tonemap(img, norm_perc)
+    elif option == 'gamma':
+        gamma = 2.24
+        return img ** gamma
+    elif option == 'degamma':
+        gamma = 1/2.24
+        return img ** gamma
+    elif option == 'gamma_tanh':
+        gamma = 2.24
+        img = img ** gamma
+        return tanh_norm_mu_tonemap(img, norm_perc)
+    elif option == 'degamma_tanh':
+        gamma = 1/2.24
+        img = img ** gamma
+        return tanh_norm_mu_tonemap(img, norm_perc)
+    else:
+        return img
+#region : Tone-mapping sub-functions 
 def mu_tonemap(hdr_image, mu=5000):
     """ This function computes the mu-law tonemapped image of a given input linear HDR image.
 
@@ -139,7 +231,7 @@ def mu_tonemap(hdr_image, mu=5000):
         np.ndarray (): Returns the mu-law tonemapped image.
 
     """
-    return torch.log(1 + mu * hdr_image) / torch.log(torch.tensor(1 + mu, dtype=torch.float32, device='cuda'))
+    return torch.log(1 + mu * hdr_image) / torch.log(torch.tensor(1 + mu, dtype=torch.float32, device=hdr_image.device))
 
 def norm_mu_tonemap(hdr_image, norm_value, mu=5000):
     """ This function normalizes the input HDR linear image by the specified norm_value and then computes
@@ -194,84 +286,10 @@ def psnr_tanh_norm_mu_tonemap(hdr_nonlinear_ref, hdr_nonlinear_res, percentile=9
     norm_perc = np.percentile(hdr_linear_ref, percentile)
     
     return psnr(tanh_norm_mu_tonemap(hdr_linear_ref, norm_perc), tanh_norm_mu_tonemap(hdr_linear_res, norm_perc))
-
-def tonemap(img, option=None):
-    if option == 'mu':
-        return mu_tonemap(img)
-    elif option == 'norm_mu':
-        norm_perc = np.percentile(img, 99)
-        return norm_mu_tonemap(img, norm_perc)
-    elif option == 'tanh_norm_mu':
-        norm_perc = np.percentile(img, 99)
-        return tanh_norm_mu_tonemap(img, norm_perc)
-    elif option == 'gamma':
-        gamma = 2.24
-        return img ** gamma
-    elif option == 'degamma':
-        gamma = 1/2.24
-        return img ** gamma
-    elif option == 'gamma_tanh':
-        gamma = 2.24
-        img = img ** gamma
-        return tanh_norm_mu_tonemap(img, norm_perc)
-    elif option == 'degamma_tanh':
-        gamma = 1/2.24
-        img = img ** gamma
-        return tanh_norm_mu_tonemap(img, norm_perc)
-    else:
-        return img
-    
+#endregion
 
 
-def save_plot(trained_model_dir):
-    # CSV 파일 읽기 (첫 번째 행이 헤더라면 skiprows=1)
-    file_path = trained_model_dir + '/plot_data.txt' 
-    data = np.loadtxt(file_path, delimiter=",", skiprows=0)
-
-    # CSV에서 데이터 읽기 (0번째 열: epoch, 1번째 열: train_loss, 2번째 열: val_loss)
-            # fplot.write(f'{epoch},{train_loss},{valid_loss},{psnr},{psnr_mu}\n')
-    epochs = data[1:, 0]
-    train_loss = data[1:, 1]
-    val_loss = data[1:, 2]
-
-    # 그래프 그리기
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_loss, label="Training Loss", color="blue", linewidth=2)
-    plt.plot(epochs, val_loss, label="Validation Loss", color="red", linestyle="dashed", linewidth=2)
-
-    # 그래프 꾸미기
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training & Validation Loss Curve")
-    plt.legend()
-    plt.grid(True)
-
-    plt.savefig(f"{trained_model_dir}/curve_loss.png", dpi=300, bbox_inches="tight")  # 고해상도 저장
-
-
-    # CSV에서 데이터 읽기 (0번째 열: epoch, 1번째 열: train_loss, 2번째 열: val_loss)
-            # fplot.write(f'{epoch},{train_loss},{valid_loss},{psnr},{psnr_mu}\n')
-    epochs = data[:, 0]
-    psnr_l = data[:, 3]
-    psnr_m = data[:, 4]
-
-    # 그래프 그리기
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, psnr_l, label="PSNR", color="blue", linewidth=2)
-    plt.plot(epochs, psnr_m, label="PSNR_mu", color="red",  linewidth=2)
-    plt.axhline(y=43.7708, color="blue", linestyle="--", linewidth=2, label="PSNR (Baseline)")
-    plt.axhline(y=47.1223, color="red",  linestyle="--", linewidth=2, label="PSNR_mu (Baseline)")
-
-    # 그래프 꾸미기
-    plt.xlabel("Epoch")
-    plt.ylabel("PSNR")
-    plt.title("PSNR Curve")
-    plt.legend()
-    plt.grid(True)
-
-    plt.savefig(f"{trained_model_dir}/curve_psnr.png", dpi=300, bbox_inches="tight")  # 고해상도 저장
-
-# Color conversion
+#region : Color conversion
 def rgb_to_yuv(tensor, mode="444"):
     r, g, b = tensor[0, :, :], tensor[1, :, :], tensor[2, :, :]
 
@@ -334,25 +352,33 @@ def rgb_to_mono_gt(tensor):
     mono = 0.299 * r + 0.587 * g + 0.114 * b
     return mono.unsqueeze(1)
 
-# VGG loss from LIGHTFUSE
-# << Orginal kera code >>
-# Patch_size = 256
-# Ch         = 3
-#
-# Select_layers = ['block1_conv1', 'block2_conv1', 'block3_conv1', 'block4_conv1', 'block5_conv1']
-# Vgg16 = VGG16(include_top=False, weights='imagenet', input_shape=(patch_size, patch_size, ch))
-# Vgg16.trainable = False
-# For l in vgg16.layers:
-#   l.trainable = False
-# Select = [vgg16.get_layer(name).output for name in select_layers]
-#
-# Model_vgg = Model(inputs=vgg16.input, outputs=select)
+def rgb_to_lab_norm(tensor):
+    lab = kornia.color.RgbToLab()(tensor)
+    
+    L = lab[:, 0:1, :, :] / 50 - 1  # L (0~100) → (-1 ~ 1)
+    a = lab[:, 1:2, :, :] / 128  # a (-128~127) → (-1 ~ 1)
+    b = lab[:, 2:3, :, :] / 128  # b (-128~127) → (-1 ~ 1)
+    
+    return torch.cat([L,a,b], dim=1)
+
+def rgb_to_lab_norm2(tensor):
+    lab = kornia.color.RgbToLab()(tensor)
+    
+    L = lab[:, 0:1, :, :] / 100  # L (0~100) → (0 ~ 1)
+    a = lab[:, 1:2, :, :] / 128  # a (-128~127) → (-1 ~ 1)
+    b = lab[:, 2:3, :, :] / 128  # b (-128~127) → (-1 ~ 1)
+    
+    return torch.cat([L,a,b], dim=1)
+#endregion
+
+
+#region : etc...
 class VGGFeatureExtractor(nn.Module):
-    def __init__(self):
+    def __init__(self, max_layer):
         super(VGGFeatureExtractor, self).__init__()
         
         vgg = models.vgg16(weights='DEFAULT').features.eval()
-        self.layers = nn.ModuleList(vgg[:25+1])
+        self.layers = nn.ModuleList(vgg[:max_layer+1])
         for param in self.layers.parameters():
             param.requires_grad = False
             
@@ -399,3 +425,70 @@ def print_model_info(model, input_size=(1, 3, 256, 256)):
                   f"{activation:<20}")
 
     print("="*80)
+
+def save_plot(trained_model_dir):
+    # CSV 파일 읽기 (첫 번째 행이 헤더라면 skiprows=1)
+    file_path = trained_model_dir + '/plot_data.txt' 
+    data = np.loadtxt(file_path, delimiter=",", skiprows=0)
+
+    # CSV에서 데이터 읽기 (0번째 열: epoch, 1번째 열: train_loss, 2번째 열: val_loss)
+            # fplot.write(f'{epoch},{train_loss},{valid_loss},{psnr},{psnr_mu}\n')
+    epochs = data[1:, 0]
+    train_loss = data[1:, 1]
+    val_loss = data[1:, 2]
+
+    # 그래프 그리기
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_loss, label="Training Loss", color="blue", linewidth=2)
+    plt.plot(epochs, val_loss, label="Validation Loss", color="red", linestyle="dashed", linewidth=2)
+
+    # 그래프 꾸미기
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Training & Validation Loss Curve")
+    plt.legend()
+    plt.grid(True)
+
+    plt.savefig(f"{trained_model_dir}/curve_loss.png", dpi=300, bbox_inches="tight")  # 고해상도 저장
+
+
+    # CSV에서 데이터 읽기 (0번째 열: epoch, 1번째 열: train_loss, 2번째 열: val_loss)
+            # fplot.write(f'{epoch},{train_loss},{valid_loss},{psnr},{psnr_mu}\n')
+    epochs = data[:, 0]
+    psnr_l = data[:, 3]
+    psnr_m = data[:, 4]
+
+    # 그래프 그리기
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, psnr_l, label="PSNR", color="blue", linewidth=2)
+    plt.plot(epochs, psnr_m, label="PSNR_mu", color="red",  linewidth=2)
+    plt.axhline(y=43.7708, color="blue", linestyle="--", linewidth=2, label="PSNR (Baseline)")
+    plt.axhline(y=47.1223, color="red",  linestyle="--", linewidth=2, label="PSNR_mu (Baseline)")
+
+    # 그래프 꾸미기
+    plt.xlabel("Epoch")
+    plt.ylabel("PSNR")
+    plt.title("PSNR Curve")
+    plt.legend()
+    plt.grid(True)
+
+    plt.savefig(f"{trained_model_dir}/curve_psnr.png", dpi=300, bbox_inches="tight")  # 고해상도 저장
+
+def mk_dir(dir_path):
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+
+def model_load(model, trained_model_dir, model_file_name):
+    model_path = os.path.join(trained_model_dir, model_file_name)
+    # trained_model_dir + model_file_name    # '/modelParas.pkl'
+    print(f"[INFO] Load model from {model_path}")
+    model.load_state_dict(torch.load(model_path))
+    return model
+
+def save_jpg(img, file_name):
+    img = torch.squeeze(img*255.)
+    img = img.data.cpu().numpy().astype(np.uint8)
+    img = np.transpose(img, (2, 1, 0))
+    img = img[:, :, [0, 1, 2]]
+    imageio.imwrite(file_name, img)
+#endregion

@@ -18,6 +18,7 @@ import imageio
 from datetime import datetime
 import wandb
 from tqdm import tqdm
+import kornia
 
 
 def model_restore(model, trained_model_dir):
@@ -58,7 +59,6 @@ class data_loader(data.Dataset):
         sample_path = sample_path.strip()
 
         if os.path.exists(sample_path):
-            #TODO : Add dataset here
             if self.data_name == 'sice':
                 with h5py.File(sample_path, 'r') as f:
                     data1 = f['IN'][0:3, :, :]  # short
@@ -195,7 +195,7 @@ def get_lr(epoch, lr, max_epochs):
     #    lr = 0.1 * lr
     return lr
 
-def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir, wandb, args):
+def train(epoch, model, loss_func, train_loaders, optimizer, trained_model_dir, wandb, args):
     # Adjust the learning rate (TODO : not used for now ...)
     #lr = get_lr(epoch, args.lr, args.epochs)
     #for param_group in optimizer.param_groups:
@@ -203,11 +203,10 @@ def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir,
     #print('[INFO] lr: {}'.format(optimizer.param_groups[0]['lr']))
     
     model.train()
-    loss_model.eval()
     
-    num = 0
     trainloss = 0
     avg_loss = 0
+    loss_breakdown = {}
     
     train_loader_iter = tqdm(enumerate(train_loaders), total=len(train_loaders), desc=f"Epoch {epoch}")
     for batch_idx, (data1, data2, data3, target) in train_loader_iter:
@@ -264,37 +263,38 @@ def train(epoch, model, loss_model, train_loaders, optimizer, trained_model_dir,
         output = tonemap(output, args.output_tonemap)
                 
         # Loss calculation
-        if args.loss == 'vgg':
-            output_vgg = loss_model(output)
-            target_vgg = loss_model(target)
-            
-            loss_mse = F.mse_loss(output, target)
-            loss_vgg = F.l1_loss(output_vgg, target_vgg)
-            loss = loss_vgg + loss_mse
-        else:
-            loss = F.l1_loss(output, target)
+        loss, loss_dict = loss_func(output, data2) #target)
         
         loss.backward()
         optimizer.step()
         trainloss = trainloss + loss
         avg_loss = avg_loss + loss
         
+        for type, value in loss_dict.items():
+            if type in loss_breakdown:
+                loss_breakdown[type] += value
+            else:
+                loss_breakdown[type] = value
+        
         train_loader_iter.set_postfix(loss=loss.item())
         
         if (batch_idx+1) % 10 == 0:
             trainloss = trainloss / 10
+            loss_breakdown = {type: value / 10 for type, value in loss_breakdown.items()}
             wandb.log({
-                "epoch": epoch,
-                "batch": batch_idx + 1,
-                "loss": trainloss.item(),
+                "train_loss": trainloss.item(),
+                "train_loss_breakdown": loss_breakdown
             })
             
             trainloss = 0
+    
+    #if (epoch == 1):
+    #    print(f"[INFO] similarity : avg {np.mean(similiarity_hist):.4f}, min {np.min(similiarity_hist):.4f}, max {np.max(similiarity_hist):.4f}")
 
     avg_loss /= len(train_loaders)
     return avg_loss
 
-def testing_fun(model, test_loaders, outdir, args):
+def testing_tile(model, loss_func, test_loaders, outdir, args):
     model.eval()
     
     test_loss = 0
@@ -305,9 +305,10 @@ def testing_fun(model, test_loaders, outdir, args):
    
     test_loader_iter = tqdm(test_loaders, total=len(test_loaders), desc="Test")
     for data1, data2, data3, target in test_loader_iter:
+        output = torch.zeros_like(data1).cuda()
         Test_Data_name = test_loaders.dataset.sample_list[num].split('.h5')[0].split('/')[-1]
         if args.use_cuda:
-            data1, data2, data3 = data1.cuda(), data2.cuda(), data3.cuda()
+            data1, data2, data3 = data1.cuda(), data2.cuda(), data3.cuda()  # b,c,w,h
             target = target.cuda()
 
         with torch.no_grad():
@@ -323,13 +324,42 @@ def testing_fun(model, test_loaders, outdir, args):
                 data3 = (data3 * 2.0) - 1.0
                 target = (target * 2.0) - 1.0
             
-            output = model(data1, data2, data3)
+            # tile split
+            num_patch_w = data1.shape[2] // args.tile_size + 1
+            num_patch_h = data1.shape[3] // args.tile_size + 1
+            boundary_size = 0
+            print(f"image size: {data1.shape} --> num_patch_h: {num_patch_h}, num_patch_w: {num_patch_w}")
             
+            for i in range(num_patch_h):
+                for j in range(num_patch_w):
+                    # calculate the start and end indices for each patch
+                    start_w = j * args.tile_size
+                    start_h = i * args.tile_size
+                    end_w = (j + 1) * args.tile_size if j < num_patch_w - 1 else data1.shape[2]
+                    end_h = (i + 1) * args.tile_size if i < num_patch_h - 1 else data1.shape[3]
+                    
+                    if "save_inter" in args.model:
+                        output[:, :, start_w:end_w, start_h:end_h], 
+                        dnet_out[:, :, start_w:end_w, start_h:end_h], 
+                        gnet_out[:, :, start_w:end_w, start_h:end_h] = model(
+                            data1[:, :, start_w:end_w, start_h:end_h], 
+                            data2[:, :, start_w:end_w, start_h:end_h], 
+                            data3[:, :, start_w:end_w, start_h:end_h])
+                    else:
+                        output[:, :, start_w:end_w, start_h:end_h] = model(
+                            data1[:, :, start_w:end_w, start_h:end_h], 
+                            data2[:, :, start_w:end_w, start_h:end_h], 
+                            data3[:, :, start_w:end_w, start_h:end_h])
+                
+             
             if args.offset:
                 output = (output + 1.0) / 2.0
                 target = (target + 1.0) / 2.0
                 
             output = tonemap(output, args.output_tonemap)
+            if "save_inter" in args.model:
+                dnet_out = tonemap(dnet_out, args.output_tonemap)
+                gnet_out = tonemap(gnet_out, args.output_tonemap)
             
         # save the result to .H5 files
         hdrfile = h5py.File(outdir + "/" + Test_Data_name + '_hdr.h5', 'w')
@@ -343,8 +373,35 @@ def testing_fun(model, test_loaders, outdir, args):
         img = img.data.cpu().numpy().astype(np.uint8)
         img = np.transpose(img, (2, 1, 0))
         img = img[:, :, [0, 1, 2]]
-        imageio.imwrite(outdir + "/" + Test_Data_name + '_out.jpg', img)
+        imageio.imwrite(outdir + "/" + Test_Data_name + '_out_' + args.test_name + '.jpg', img)
         
+        if "save_inter" in args.model:
+            img = dnet_out + data2
+            img = torch.squeeze(img*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(outdir + "/" + Test_Data_name + '_dnet_out_data2.jpg', img)
+            
+            img = gnet_out + data2
+            img = torch.squeeze(img*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(outdir + "/" + Test_Data_name + '_gnet_out_data2.jpg', img)
+            
+            img = torch.squeeze(dnet_out*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(outdir + "/" + Test_Data_name + '_dnet_out.jpg', img)
+            
+            img = torch.squeeze(gnet_out*255.)
+            img = img.data.cpu().numpy().astype(np.uint8)
+            img = np.transpose(img, (2, 1, 0))
+            img = img[:, :, [0, 1, 2]]
+            imageio.imwrite(outdir + "/" + Test_Data_name + '_gnet_out.jpg', img)
+            
         img = torch.squeeze(data1*255.)
         img = img.data.cpu().numpy().astype(np.uint8)
         img = np.transpose(img, (2, 1, 0))
@@ -390,8 +447,10 @@ def testing_fun(model, test_loaders, outdir, args):
         #    Variable(torch.from_numpy(np.array([1 + 5000])).float()))
 
         #test_loss += F.mse_loss(hdr, target)
-        test_loss += F.mse_loss(output, target)
-            
+        
+        loss, _ = loss_func(output, target)
+        
+        test_loss += loss
         num = num + 1
 
     test_loss = test_loss / len(test_loaders.dataset)
@@ -467,3 +526,121 @@ def validation(epoch, model, valid_loaders, trained_model_dir, args):
     print('Validation - Epoch {}: avg_loss: {:.4f}, Average PSNR: {:.4f}'.format(epoch, valid_loss, val_psnr))
     
     return valid_loss, val_psnr
+
+
+## Loss related
+class loss_function(nn.Module):
+    def __init__(self, args):
+        super(loss_function, self).__init__()
+        
+        self.loss_types = args.loss if isinstance(args.loss, list) else [args.loss]
+        self.weights = args.loss_weights if isinstance(args.loss_weights, list) else [args.loss_weights]
+        
+        if len(self.loss_types) > 1 and len(self.loss_types) != len(self.weights):
+            raise ValueError(f"[WARN] # of loss type ({len(self.loss_types)}) != # of weight ({len(self.weights)})")
+        print(f"[INFO] Loss function : {list(zip(self.loss_types, self.weights))}")
+        
+        self.loss_func = [get_loss_func(l.lower(), args) for l in self.loss_types]
+        
+    def forward(self, input, target):
+        total_loss = 0.0
+        loss_dict = {loss_type: 0.0 for loss_type in self.loss_types}
+ 
+        for loss_type, loss_func, weight in zip (self.loss_types, self.loss_func, self.weights):
+            loss_value = loss_func(input, target)
+            loss_dict[loss_type] += weight * loss_value.item()
+            total_loss += weight * loss_value
+        return total_loss, loss_dict
+
+def get_loss_func(loss_type, args):
+    if loss_type == 'mse':
+        print(f"[INFO] Get loss type : MSE")
+        return nn.MSELoss()
+    elif loss_type.lower() == 'l1':
+        print(f"[INFO] Get loss type : L1")
+        return nn.L1Loss()
+    elif loss_type == 'vgg':
+        loss_model = VGGFeatureExtractor(args.vgg_layer)
+        loss_model.cuda()
+        loss_model = nn.DataParallel(loss_model)
+        return VGGLoss(loss_model)
+    elif loss_type == 'lab':
+        return LABLoss('lab', 'unsignedL', 'L1')
+    elif loss_type == 'ab':
+        return LABLoss('ab', 'unsignedL', 'L1')
+    elif loss_type == 'lab_lonly_signed':
+        return LABLoss('l', 'unsignedL', 'L1')
+    elif loss_type == 'lab_lonly_unsigned':
+        return LABLoss('l', 'unsignedL', 'L1')
+    elif loss_type == 'vgg_mult_l1':
+        loss_model = VGGFeatureExtractor(args.vgg_layer)
+        loss_model.cuda()
+        loss_model = nn.DataParallel(loss_model)
+        return VGGmultL1_Loss(loss_model)
+    else:
+        raise ValueError(f"[ERROR] Invalid loss type ({loss_type})")
+        
+         
+class VGGLoss(nn.Module):
+    def __init__(self, vgg_model):
+        super(VGGLoss, self).__init__()
+        self.vgg_model = vgg_model
+        print(f"[INFO] Get loss type : VGG")
+        print(f"[INFO] VGG model for loss : {self.vgg_model}")
+    
+    def forward(self, input, target):
+        input_features = self.vgg_model(input)
+        target_features = self.vgg_model(target)
+        return F.l1_loss(input_features, target_features)
+    
+class VGGmultL1_Loss(nn.Module):
+    def __init__(self, vgg_model):
+        super(VGGmultL1_Loss, self).__init__()
+        self.vgg_model = vgg_model
+        self.l1_loss = nn.L1Loss()
+        print(f"[INFO] Get loss type : VGGmultL1")
+        print(f"[INFO] VGG model for loss : {self.vgg_model}")
+        
+    def forward(self, input, target):
+        input_features = self.vgg_model(input)
+        target_features = self.vgg_model(target)
+        vgg_loss = self.l1_loss(input_features, target_features)
+        lab_loss = self.l1_loss(input, target)
+        return vgg_loss * lab_loss * 10 
+
+class LABLoss(nn.Module):
+    def __init__(self, channel, norm, loss_type):
+        super(LABLoss, self).__init__()
+        self.channel = channel.lower()
+        self.norm = norm.lower()
+        if loss_type == 'mse':
+            self.loss = nn.MSELoss()
+        elif loss_type == 'L1':
+            self.loss = nn.L1Loss()
+        else:
+            self.loss = nn.MSELoss()
+        print(f"[INFO] Get loss type : LAB")
+        print(f"       (ch - {self.channel}, norm - {self.norm}, type - {self.loss}")
+        
+    def forward(self, input, target):
+        if self.norm == 'unsignedl':
+            input_lab  = rgb_to_lab_norm2(input)
+            target_lab = rgb_to_lab_norm2(target)
+        elif self.norm == 'signedl':
+            input_lab  = rgb_to_lab_norm(input)
+            target_lab = rgb_to_lab_norm(target)
+        else:
+            input_lab  = kornia.color.RgbToLab()(input)
+            target_lab = kornia.color.RgbToLab()(target)
+    
+        if self.channel == 'l':
+            input_  =  input_lab[:, 0:1, :, :]
+            target_ = target_lab[:, 0:1, :, :]
+        elif self.channel == 'ab':
+            input_  =  input_lab[:, 1:3, :, :]
+            target_ = target_lab[:, 1:3, :, :]
+        else:
+            input_  =  input_lab[:, 0:3, :, :]
+            target_ = target_lab[:, 0:3, :, :]
+            
+        return self.loss(input_, target_)
