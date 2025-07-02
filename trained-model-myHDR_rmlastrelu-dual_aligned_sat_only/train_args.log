@@ -1,0 +1,27 @@
+train_name: dual_aligned_sat_only
+train_data: ./dataset_kalan_aligned/Training_patch
+valid_data: ./dataset_kalan_aligned/Test
+model: myHDR_rmlastrelu
+nChannel: 9
+nFeat: 32
+loss: ['MSE', 'VGG']
+loss_weights: [1, 1]
+epochs: 1000
+init: kaiming
+batchsize: 32
+train_with_mask: True
+load_gating_map: sat
+map_index_enable: 1
+output_gating: none
+offset: False
+input_tonemap: mu
+label_tonemap: mu
+output_tonemap: None
+adjust_exp_to: None
+use_cuda: True
+restore: True
+load_model: True
+seed: 1
+vgg_layer: 22
+lr: 0.001
+momentum: 0.9
