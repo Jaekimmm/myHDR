@@ -321,11 +321,20 @@ def testing_gate(model, denoise_model, loss_func, gate_func, test_loaders, outdi
     num = 0
     avg_gated_ratio = 0
     
-    log_file = os.path.join(outdir, 'train_args.log')
+    log_file = os.path.join(outdir, 'test_args.log')
     with open(log_file, 'w') as flog:
         for key, value in vars(args).items():
             flog.write(f"{key}: {value}\n")
-    
+#            
+#    # hook for saving the layer output
+#    activations = {}
+#    def get_activation(name):
+#        def hook(model, input, output):
+#            activations[name] = output.detach().cpu().numpy()
+#        return hook
+#    
+#    denoise_model.module.pointwise3.register_forward_hook(get_activation('pointwise3'))
+ 
     test_loader_iter = tqdm(test_loaders, total=len(test_loaders), desc="Test")
     for data, mask, exp in test_loader_iter:
     #for data, mask, exp, denoised_mid in test_loader_iter:
@@ -360,6 +369,22 @@ def testing_gate(model, denoise_model, loss_func, gate_func, test_loaders, outdi
             denoised_mid = denoise_model(data1, data2, data3)
             #output_raw = model(data1, data2, data3)
             output_raw = model(data1, denoised_mid, data3)
+
+#            # generate map from dnet activation <250702>
+#            activation = activations['pointwise3']
+#            activation_tensor = torch.from_numpy(activation).to(output_raw.device)
+#            act_tensor_y = 0.299 * activation_tensor[:, 0, :, :] + 0.587 * activation_tensor[:, 1, :, :] + 0.114 * activation_tensor[:, 2, :, :]
+#            mask_new = torch.relu(act_tensor_y)
+#            
+#            with h5py.File(outdir + "/" + Test_Data_name + '_act.h5', 'w') as f:
+#                for c in range(activation.shape[1]):
+#                    f.create_dataset(f'channel_{c}', data=activation[0, c, :, :])
+#                img = activation[0]
+#                f.create_dataset('img', data=img)
+#                mask_new_h5 = mask_new[0]
+#                mask_new_h5 = tv.utils.make_grid(mask_new_h5.data.cpu()).numpy()
+#                f.create_dataset('mask_new', data=mask_new_h5)
+            
                 
             if args.offset:
                 output_raw = (output_raw + 1.0) / 2.0
@@ -375,6 +400,8 @@ def testing_gate(model, denoise_model, loss_func, gate_func, test_loaders, outdi
                                                 map_file=f"{outdir}/{Test_Data_name}_gate_map_{args.output_gating}.png")
             else:
                 mask = torch.where(mask == args.map_index_enable, torch.ones_like(mask), torch.zeros_like(mask))
+                #mask = mask_new
+                #mask_bin = torch.where(mask > 0, torch.ones_like(mask), torch.zeros_like(mask))
                 if 'ds' in args.map_preproc:
                     scale_factor = int(args.map_preproc.split('ds')[1])
                     mask = torch.nn.functional.interpolate(mask, scale_factor=1/scale_factor, mode='nearest')
@@ -387,10 +414,13 @@ def testing_gate(model, denoise_model, loss_func, gate_func, test_loaders, outdi
                     mask = kornia.filters.gaussian_blur2d(mask, (kernel_size, kernel_size), (1.5, 1.5))
                 
                 save_tensor_to_img(mask,       f"{outdir}/{Test_Data_name}_mask_{args.model}_{args.train_name}_{args.test_name}.png")
+                save_tensor_to_img(mask_bin,   f"{outdir}/{Test_Data_name}_mask_bin_{args.model}_{args.train_name}_{args.test_name}.png")
                 mask = mask.expand_as(data1)
-                #output = output_raw * mask + data2 * (1 - mask)
+                #mask_bin = mask_bin.expand_as(data1)
                 output = output_raw * mask + denoised_mid * (1 - mask)
+                #output_mask_bin = output_raw * mask_bin + denoised_mid * (1 - mask_bin)
                 gated_ratio = (mask == 2).sum() / mask.numel()
+                #gated_ratio = (mask == 0).sum() / mask.numel()
             
         # save the result to .H5 files
         if verbose: print(f"[LOG] Store the result")
@@ -406,6 +436,7 @@ def testing_gate(model, denoise_model, loss_func, gate_func, test_loaders, outdi
         save_tensor_to_img(output_raw, f"{outdir}/{Test_Data_name}_out_raw_{args.model}_{args.train_name}_{args.test_name}.png")
         if args.output_gating is not None and args.output_gating != 'none':
             save_tensor_to_img(output,     f"{outdir}/{Test_Data_name}_out_gated_{args.model}_{args.train_name}_{args.test_name}.png")
+        #    save_tensor_to_img(output_mask_bin,     f"{outdir}/{Test_Data_name}_out_gated_bin_{args.model}_{args.train_name}_{args.test_name}.png")
         
         if verbose: print(f"[LOG] Store images... input")
         #save_tensor_to_img(data1, f"{outdir}/{Test_Data_name}_data1.png")

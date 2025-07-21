@@ -15,6 +15,7 @@ from distutils.util import strtobool
 import wandb
 import torch.onnx
 from torch.export import export
+import shutil
 
 parser = argparse.ArgumentParser(description='Attention-guided HDR')
 
@@ -119,6 +120,10 @@ if args.use_cuda:
 
 # Training loop
 start_epoch = 0
+best_psnr = float('-inf')
+best_epoch = 0
+best_model_path = ''
+
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-8)
 loss_func = get_loss_function(args)
 
@@ -133,7 +138,7 @@ if args.restore and len(os.listdir(trained_model_dir)):
     print('[INFO] restart from epoch {}'.format(start_epoch))
 
 start_train = time.time()
-save_model_interval = max(1, args.epochs // 10)
+save_model_interval = max(1, args.epochs // 20)
 for epoch in range(start_epoch + 1, args.epochs + 1):
     start = time.time()
     train_loss = train(epoch, model, loss_func, gate_func, train_loaders, optimizer, trained_model_dir, wandb, args)
@@ -147,6 +152,16 @@ for epoch in range(start_epoch + 1, args.epochs + 1):
             "valid_loss": valid_loss,
             "psnr": psnr,
         })
+        
+        if psnr > best_psnr:
+            best_psnr = psnr
+            best_epoch = epoch
+            best_model_path = model_name
+
+if best_model_path is not None:
+    dst_path = os.path.join(trained_model_dir, 'trained_model_best.pkl')
+    shutil.copyfile(best_model_path, dst_path)
+    print(f"[INFO] Best model saved : epoch {best_epoch} with PSNR {best_psnr:.4f}")
 
 # save onnx
 dummy_input = (

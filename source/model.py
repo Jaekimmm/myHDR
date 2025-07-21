@@ -4,6 +4,155 @@ import torch.nn.functional as F
 import numpy as np
 from torch.autograd import Variable
 
+class myHDR_DenoiseNet(nn.Module):
+    def __init__(self, args):
+        super(myHDR_DenoiseNet, self).__init__()
+        nChannel = args.nChannel
+        nFeat = args.nFeat
+        self.args = args
+        print(f"[INFO] nChannel : {nChannel}, nFeat : {nFeat}")
+        
+        # DetailNet
+        self.pointwise1 = nn.Conv2d(nChannel, nFeat, kernel_size=3, stride=1, padding=1, bias=True)
+        self.pointwise2 = nn.Conv2d(nFeat, nFeat, kernel_size=3, stride=1, padding=1, bias=True)
+        self.pointwise3 = nn.Conv2d(nFeat, 3, kernel_size=3, stride=1, padding=1, bias=True)
+        self.depthwise_out = nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1, groups=3)
+        
+        # Final Output
+        self.relu = nn.ReLU()
+
+    def forward(self, x1, x2, x3):
+        x = x2
+        
+        # DetailNet
+        dnet_1 = self.relu(self.pointwise1(x))
+        dnet_2 = self.relu(self.pointwise2(dnet_1))
+        dnet_out = self.pointwise3(dnet_2)
+
+        # Element-wise Addition
+        out = dnet_out
+        out = out + x2
+        #out = torch.sigmoid(out)
+        out = torch.clamp(out, 0.0, 1.0)  # Clipping the output to [0, 1] range
+        return out
+
+
+class myHDR_FusionNet(nn.Module):
+    def __init__(self, args):
+        super(myHDR_FusionNet, self).__init__()
+        nChannel = args.nChannel
+        nFeat = args.nFeat
+        self.args = args
+        print(f"[INFO] nChannel : {nChannel}, nFeat : {nFeat}")
+        
+        # DetailNet
+        self.pointwise1 = nn.Conv2d(nChannel, nFeat, kernel_size=1, stride=1, padding=0, bias=True)
+        self.pointwise2 = nn.Conv2d(nFeat, nFeat, kernel_size=1, stride=1, padding=0, bias=True)
+        self.pointwise3 = nn.Conv2d(nFeat, 3, kernel_size=1, stride=1, padding=0, bias=True)
+
+        # GlobalNet : 
+        # Depthwise & Separable Convolution Layers
+        self.depthwise1 = nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel)
+        self.depthwise2 = nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel)
+        self.separable_conv = nn.Sequential(
+          nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel),
+          nn.Conv2d(nChannel,        3, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+
+        # Upsampling (ConvTranspose2d)
+        self.upsample1 = nn.Upsample(scale_factor=2)
+        self.upsample2 = nn.Upsample(scale_factor=2)
+        self.upsample3 = nn.Upsample(scale_factor=2)
+
+        self.depthwise_out = nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1, groups=3)
+        
+        # Final Output
+        self.relu = nn.ReLU()
+
+    def forward(self, x1, x2, x3):
+        x = torch.cat((x1, x2, x3), dim=1)
+        
+        # DetailNet
+        dnet_1 = self.relu(self.pointwise1(x))
+        dnet_2 = self.relu(self.pointwise2(dnet_1))
+        dnet_out = self.pointwise3(dnet_2)
+        
+        # GlobalNet 
+        gnet_dconv_1 = self.depthwise1(x)
+        gnet_dconv_2 = self.depthwise2(gnet_dconv_1)
+        gnet_dconv_3 = self.separable_conv(gnet_dconv_2)
+
+        # Upsampling
+        gnet_up_1 = self.upsample1(gnet_dconv_3)
+        gnet_up_2 = self.upsample2(gnet_up_1)
+        gnet_out = self.upsample3(gnet_up_2)
+
+        # Element-wise Addition
+        out = dnet_out + gnet_out
+        out = self.depthwise_out(out)
+        out = out + x2
+        #out = torch.sigmoid(out)
+        out = torch.clamp(out, 0.0, 1.0)  # Clipping the output to [0, 1] range
+        return out
+
+class myHDR_FusionNet_2exp(nn.Module):
+    def __init__(self, args):
+        super(myHDR_FusionNet_2exp, self).__init__()
+        nChannel = args.nChannel
+        nFeat = args.nFeat
+        self.args = args
+        print(f"[INFO] nChannel : {nChannel}, nFeat : {nFeat}")
+        
+        # DetailNet
+        self.pointwise1 = nn.Conv2d(nChannel, nFeat, kernel_size=1, stride=1, padding=0, bias=True)
+        self.pointwise2 = nn.Conv2d(nFeat, nFeat, kernel_size=1, stride=1, padding=0, bias=True)
+        self.pointwise3 = nn.Conv2d(nFeat, 3, kernel_size=1, stride=1, padding=0, bias=True)
+
+        # GlobalNet : 
+        # Depthwise & Separable Convolution Layers
+        self.depthwise1 = nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel)
+        self.depthwise2 = nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel)
+        self.separable_conv = nn.Sequential(
+          nn.Conv2d(nChannel, nChannel, kernel_size=3, stride=2, padding=1, groups=nChannel),
+          nn.Conv2d(nChannel,        3, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+
+        # Upsampling (ConvTranspose2d)
+        self.upsample1 = nn.Upsample(scale_factor=2)
+        self.upsample2 = nn.Upsample(scale_factor=2)
+        self.upsample3 = nn.Upsample(scale_factor=2)
+
+        self.depthwise_out = nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1, groups=3)
+        
+        # Final Output
+        self.relu = nn.ReLU()
+
+    def forward(self, x1, x2, x3):
+        x = torch.cat((x1, x2), dim=1)
+        
+        # DetailNet
+        dnet_1 = self.relu(self.pointwise1(x))
+        dnet_2 = self.relu(self.pointwise2(dnet_1))
+        dnet_out = self.pointwise3(dnet_2)
+        
+        # GlobalNet 
+        gnet_dconv_1 = self.depthwise1(x)
+        gnet_dconv_2 = self.depthwise2(gnet_dconv_1)
+        gnet_dconv_3 = self.separable_conv(gnet_dconv_2)
+
+        # Upsampling
+        gnet_up_1 = self.upsample1(gnet_dconv_3)
+        gnet_up_2 = self.upsample2(gnet_up_1)
+        gnet_out = self.upsample3(gnet_up_2)
+
+        # Element-wise Addition
+        out = dnet_out + gnet_out
+        out = self.depthwise_out(out)
+        out = out + x2
+        #out = torch.sigmoid(out)
+        out = torch.clamp(out, 0.0, 1.0)  # Clipping the output to [0, 1] range
+        return out
+
 class myHDR_new2_conv(nn.Module):
     def __init__(self, args):
         super(myHDR_new2_conv, self).__init__()
