@@ -300,3 +300,7 @@ myHDR_detail_only_conv333_new_nosigmoid, final_nosat, e100, 100, 07/21 16:13:03,
 myHDR_rmlastrelu_nosigmoid, final_sat_only, e100, 100, 07/21 16:19:31, 0.038228, 31.396080, 470.941205, 0.0000
 myHDR_detail_only_conv333_new_nosigmoid, final_nosat, e100, 100, 07/21 16:19:41, 0.009663, 37.710946, 565.664194, 0.0000
 myHDR_rmlastrelu_nosigmoid, final, e100, 100, 07/21 16:19:43, 0.022433, 39.924367, 598.865502, 0.0000
+myHDR_FusionNet, final_feat16, e15, 15, 07/22 20:37:49, 0.023558, 38.645638, 579.684570, 0.0000
+myHDR_FusionNet, final, e15, 15, 07/22 20:37:50, 0.055667, 23.599116, 353.986737, 0.0000
+myHDR_FusionNet, final_feat16, best, 0, 07/24 06:09:25, 0.022787, 39.349249, 590.238738, 0.0000
+myHDR_FusionNet, final, best, 0, 07/24 06:09:25, 0.055450, 23.610966, 354.164491, 0.0000

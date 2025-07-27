@@ -139,6 +139,8 @@ if args.restore and len(os.listdir(trained_model_dir)):
 
 start_train = time.time()
 save_model_interval = max(1, args.epochs // 20)
+vlog = os.path.join(trained_model_dir, 'validation.log')
+
 for epoch in range(start_epoch + 1, args.epochs + 1):
     start = time.time()
     train_loss = train(epoch, model, loss_func, gate_func, train_loaders, optimizer, trained_model_dir, wandb, args)
@@ -153,6 +155,9 @@ for epoch in range(start_epoch + 1, args.epochs + 1):
             "psnr": psnr,
         })
         
+        with open(vlog, 'w') as f:
+            f.write(f"epoch: {epoch}, psnr: {psnr}\n")
+        
         if psnr > best_psnr:
             best_psnr = psnr
             best_epoch = epoch
@@ -161,8 +166,9 @@ for epoch in range(start_epoch + 1, args.epochs + 1):
 if best_model_path is not None:
     dst_path = os.path.join(trained_model_dir, 'trained_model_best.pkl')
     shutil.copyfile(best_model_path, dst_path)
+    shutil.copyfile(f"valid_best_e{best_epoch}_psnr{best_psnr:.4f}", vlog)
     print(f"[INFO] Best model saved : epoch {best_epoch} with PSNR {best_psnr:.4f}")
-
+    
 # save onnx
 dummy_input = (
     torch.randn(1, 3, 256, 256),
@@ -170,7 +176,7 @@ dummy_input = (
     torch.randn(1, 3, 256, 256),
 )
 
-onnx_path = f"/home/jaekim/ws/git/myHDR/models_onnx/model-{args.model}.onnx"
+onnx_path = f"./models_onnx/model-{args.model}.onnx"
 torch.onnx.export(
     model.cpu().module, 
     dummy_input,
@@ -188,7 +194,7 @@ torch.onnx.export(
     }
 )
 
-pt2_path = f"/home/jaekim/ws/git/myHDR/models_onnx/model-{args.model}.pt2"
+pt2_path = f"./models_onnx/model-{args.model}.pt2"
 
 exported = torch.export.export(
     model.cpu().module,

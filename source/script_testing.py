@@ -63,9 +63,13 @@ testimage_dataset = torch.utils.data.DataLoader(
 
 #make folders of trained model and result
 trained_model_dir = f"./trained-model-{args.model}-{args.train_name}/"
+if args.epoch == 0:
+    trained_model_filename = f"trained_model_best.pkl"
+else:
+    trained_model_filename = f"trained_model{args.epoch}.pkl"
 outdir = f"./result-{args.model}-{args.train_name}-{args.test_name}/"
-trained_model_filename = f"trained_model{args.epoch}.pkl"
 mk_dir(outdir)
+
 
 # Get model
 if args.model in globals(): 
